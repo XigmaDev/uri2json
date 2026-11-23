@@ -130,10 +130,12 @@ impl Protocol {
                 let name = match name {
                     "simple-obfs" | "obfs-local" => "obfs-local",
                     "v2ray-plugin" => "v2ray-plugin",
-                    other => return Err(ConversionError::UnsupportedFeature(format!(
+                    other => {
+                        return Err(ConversionError::UnsupportedFeature(format!(
                         "shadowsocks plugin '{}' (sing-box supports obfs-local and v2ray-plugin)",
                         other
-                    ))),
+                    )))
+                    }
                 };
                 (Some(name.to_string()), opts.filter(|o| !o.is_empty()))
             }

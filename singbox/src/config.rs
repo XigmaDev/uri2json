@@ -10,6 +10,7 @@ pub struct SingBoxConfig {
     version: Version,
     log: Value,
     dns: Value,
+    http_clients: Vec<Value>,
     endpoints: Vec<Value>,
     inbounds: Vec<Value>,
     outbounds: Vec<Value>,
@@ -29,6 +30,7 @@ impl SingBoxConfig {
                 "servers": [],
                 "rules": [],
             }),
+            http_clients: Vec::new(),
             endpoints: Vec::new(),
             inbounds: Vec::new(),
             outbounds: Vec::new(),
@@ -37,8 +39,14 @@ impl SingBoxConfig {
         })
     }
 
+    fn at_least(&self, minor: u64) -> bool {
+        self.version >= Version::new(1, minor, 0)
+    }
+
+    /// sing-box 1.12 introduced the typed DNS server format; the legacy
+    /// format was removed in 1.14.
     fn is_1_12_or_newer(&self) -> bool {
-        self.version >= Version::new(1, 12, 0)
+        self.at_least(12)
     }
 
     /// Endpoints (used for WireGuard) were added in sing-box 1.11.0.
@@ -57,7 +65,8 @@ impl SingBoxConfig {
         self.inbounds.push(json!({
             "type": "mixed",
             "tag": "mixed-in",
-            "listen": "::",
+            // Loopback only: the inbound has no authentication.
+            "listen": "127.0.0.1",
             "listen_port": 2080,
         }));
     }
@@ -79,7 +88,6 @@ impl SingBoxConfig {
                 "fe80::/10",
                 "fc00::/7"
             ],
-            "gso": false,
             "auto_route": true,
             "mtu": 1358,
             "strict_route": true,
@@ -123,7 +131,10 @@ impl SingBoxConfig {
                     "tag": "remote",
                     "type": "tls",
                     "server": "dns.adguard-dns.com",
-                    "domain_resolver": "local"
+                    "domain_resolver": "local",
+                    // Typed DNS servers dial directly by default; send
+                    // remote queries through the proxy to avoid DNS leaks.
+                    "detour": "proxy"
                 }),
                 json!({
                     "tag": "local",
@@ -158,6 +169,7 @@ impl SingBoxConfig {
 
     pub fn add_dns_rule(&mut self) {
         if self.is_1_12_or_newer() {
+            self.add_typed_dns_rules();
             return;
         }
         let Some(dns) = self.dns.as_object_mut() else {
@@ -208,13 +220,43 @@ impl SingBoxConfig {
         dns.insert("strategy".to_string(), json!("prefer_ipv4"));
     }
 
+    /// DNS rules for the typed (1.12+) DNS format. Domains that are routed
+    /// directly are resolved by the local server so they get local answers.
+    fn add_typed_dns_rules(&mut self) {
+        let Some(dns) = self.dns.as_object_mut() else {
+            return;
+        };
+        if let Some(rules) = dns
+            .entry("rules")
+            .or_insert_with(|| Value::Array(Vec::new()))
+            .as_array_mut()
+        {
+            rules.extend([
+                json!({
+                    "domain": [
+                        "raw.githubusercontent.com",
+                        "time.apple.com",
+                    ],
+                    "server": "local"
+                }),
+                json!({
+                    "rule_set": "geosite-category-ir",
+                    "server": "local"
+                }),
+            ]);
+        }
+        dns.insert("final".to_string(), json!("remote"));
+        dns.insert("strategy".to_string(), json!("prefer_ipv4"));
+    }
+
     pub fn set_route(&mut self) {
         let mut route = json!({
             "auto_detect_interface": true,
             "override_android_vpn": true,
             "rules": [
                 {
-                    "inbound": "tun-in",
+                    // Sniff every inbound so domain and QUIC rules also match
+                    // traffic from the mixed inbound.
                     "action": "sniff"
                 },
                 {
@@ -258,16 +300,41 @@ impl SingBoxConfig {
                     "outbound": "proxy"
                 }
             ],
-            "rule_set": [
-                remote_rule_set("geosite-category-ads-all", "sing-geosite", "geosite-category-ads-all", "1d"),
-                remote_rule_set("geosite-google-ads", "sing-geosite", "geosite-google-ads", "1d"),
-                remote_rule_set("geosite-category-ads", "sing-geosite", "geosite-category-ads", "1d"),
-                remote_rule_set("geosite-category-public-tracker", "sing-geosite", "geosite-category-public-tracker", "1d"),
-                remote_rule_set("geosite-category-ir", "sing-geosite", "geosite-category-ir", "168h0m0s"),
-                remote_rule_set("geoip-ir", "sing-geoip", "geoip-ir", "168h0m0s"),
-            ],
             "final": "proxy"
         });
+
+        // Since 1.14, rule-sets are downloaded through an HTTP client;
+        // download_detour and the implicit default client are deprecated.
+        let http_client = self.at_least(14);
+        route["rule_set"] = json!([
+            remote_rule_set(
+                "geosite-category-ads-all",
+                "sing-geosite",
+                "1d",
+                http_client
+            ),
+            remote_rule_set("geosite-google-ads", "sing-geosite", "1d", http_client),
+            remote_rule_set("geosite-category-ads", "sing-geosite", "1d", http_client),
+            remote_rule_set(
+                "geosite-category-public-tracker",
+                "sing-geosite",
+                "1d",
+                http_client
+            ),
+            remote_rule_set(
+                "geosite-category-ir",
+                "sing-geosite",
+                "168h0m0s",
+                http_client
+            ),
+            remote_rule_set("geoip-ir", "sing-geoip", "168h0m0s", http_client),
+        ]);
+
+        if http_client {
+            // No detour: an HTTP client without dial fields connects directly.
+            self.http_clients = vec![json!({ "tag": DIRECT_HTTP_CLIENT })];
+            route["default_http_client"] = json!(DIRECT_HTTP_CLIENT);
+        }
 
         if self.is_1_12_or_newer() {
             route["default_domain_resolver"] = json!({ "server": "local" });
@@ -290,6 +357,12 @@ impl SingBoxConfig {
 
         map.insert("log".to_string(), self.log.clone());
         map.insert("dns".to_string(), self.dns.clone());
+        if !self.http_clients.is_empty() {
+            map.insert(
+                "http_clients".to_string(),
+                Value::Array(self.http_clients.clone()),
+            );
+        }
         if self.supports_endpoints() && !self.endpoints.is_empty() {
             map.insert(
                 "endpoints".to_string(),
@@ -321,22 +394,37 @@ impl SingBoxConfig {
     }
 }
 
-fn remote_rule_set(tag: &str, repo: &str, file: &str, update_interval: &str) -> Value {
-    json!({
+const DIRECT_HTTP_CLIENT: &str = "direct-http";
+
+fn remote_rule_set(tag: &str, repo: &str, update_interval: &str, http_client: bool) -> Value {
+    let mut rule_set = json!({
         "type": "remote",
         "tag": tag,
         "format": "binary",
-        "url": format!("https://raw.githubusercontent.com/SagerNet/{}/rule-set/{}.srs", repo, file),
-        "download_detour": "direct",
+        "url": format!("https://raw.githubusercontent.com/SagerNet/{}/rule-set/{}.srs", repo, tag),
         "update_interval": update_interval
-    })
+    });
+    if !http_client {
+        rule_set["download_detour"] = json!("direct");
+    }
+    rule_set
 }
+
+/// Oldest sing-box version the generated config works with (rule actions
+/// and endpoints were introduced in 1.11.0).
+pub const MIN_VERSION: Version = Version::new(1, 11, 0);
 
 /// Converts a share link into a complete sing-box configuration using the
 /// default inbounds, DNS and routing.
 pub fn generate(version: &str, uri: &str) -> Result<String, ConversionError> {
-    let protocol = Protocol::parse_uri(uri)?;
     let mut config = SingBoxConfig::new(version.to_string())?;
+    if config.version < MIN_VERSION {
+        return Err(ConversionError::InvalidVersion(format!(
+            "{} is too old, the generated config needs sing-box {} or newer",
+            config.version, MIN_VERSION
+        )));
+    }
+    let protocol = Protocol::parse_uri(uri)?;
     config.set_log_level("warn");
     config.add_dns_server();
     config.add_dns_rule();
@@ -369,7 +457,7 @@ mod tests {
 
     #[test]
     fn every_route_outbound_exists() {
-        for version in ["1.11.0", "1.12.0"] {
+        for version in ALL_VERSIONS {
             let cfg = build(version, "vless://uuid@example.com:443?security=tls&type=ws");
             let outbounds = tags(&cfg["outbounds"]);
             for rule in cfg["route"]["rules"].as_array().unwrap() {
@@ -382,7 +470,7 @@ mod tests {
 
     #[test]
     fn wireguard_uses_endpoint_and_keeps_direct() {
-        for version in ["1.11.0", "1.12.0"] {
+        for version in ALL_VERSIONS {
             let cfg = build(
                 version,
                 "wireguard://key@1.2.3.4:51820?publickey=pub&address=10.0.0.2/32",
@@ -402,6 +490,70 @@ mod tests {
         assert_eq!(new["dns"]["servers"][0]["type"], "tls");
         assert_eq!(new["route"]["default_domain_resolver"]["server"], "local");
         assert!(new.get("endpoints").is_none());
+    }
+
+    const ALL_VERSIONS: [&str; 4] = ["1.11.0", "1.12.0", "1.13.0", "1.14.4"];
+
+    #[test]
+    fn rule_set_download_options_follow_version() {
+        let old = build("1.13.0", "trojan://pw@example.com:443");
+        assert!(old.get("http_clients").is_none());
+        assert!(old["route"].get("default_http_client").is_none());
+        assert_eq!(old["route"]["rule_set"][0]["download_detour"], "direct");
+
+        let new = build("1.14.4", "trojan://pw@example.com:443");
+        assert_eq!(tags(&new["http_clients"]), vec!["direct-http"]);
+        assert_eq!(new["route"]["default_http_client"], "direct-http");
+        for rule_set in new["route"]["rule_set"].as_array().unwrap() {
+            assert!(rule_set.get("download_detour").is_none());
+            let tag = rule_set["tag"].as_str().unwrap();
+            assert!(rule_set["url"]
+                .as_str()
+                .unwrap()
+                .ends_with(&format!("/{tag}.srs")));
+        }
+    }
+
+    #[test]
+    fn no_removed_or_unsafe_fields() {
+        for version in ALL_VERSIONS {
+            let cfg = build(version, "trojan://pw@example.com:443");
+            let tun = &cfg["inbounds"][1];
+            assert_eq!(tun["type"], "tun");
+            assert!(tun.get("gso").is_none(), "gso was removed in 1.13");
+            assert!(tun.get("stack").is_none());
+            assert_eq!(cfg["inbounds"][0]["listen"], "127.0.0.1");
+            let sniff = &cfg["route"]["rules"][0];
+            assert_eq!(sniff["action"], "sniff");
+            assert!(sniff.get("inbound").is_none());
+        }
+    }
+
+    #[test]
+    fn typed_dns_goes_through_proxy() {
+        for version in ["1.12.0", "1.13.0", "1.14.4"] {
+            let cfg = build(version, "trojan://pw@example.com:443");
+            let servers = cfg["dns"]["servers"].as_array().unwrap();
+            assert!(
+                servers.iter().all(|s| s.get("address").is_none()),
+                "{version}"
+            );
+            assert_eq!(servers[0]["tag"], "remote");
+            assert_eq!(servers[0]["detour"], "proxy");
+            assert_eq!(cfg["dns"]["final"], "remote");
+            assert!(cfg["dns"].get("independent_cache").is_none());
+            for rule in cfg["dns"]["rules"].as_array().unwrap() {
+                assert!(rule.get("outbound").is_none(), "{version}");
+            }
+        }
+    }
+
+    #[test]
+    fn too_old_version_is_rejected() {
+        assert!(matches!(
+            generate("1.10.0", "trojan://pw@example.com:443"),
+            Err(ConversionError::InvalidVersion(_))
+        ));
     }
 
     #[test]

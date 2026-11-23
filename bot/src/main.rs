@@ -67,26 +67,26 @@ async fn handle_singbox(bot: &Bot, msg: &Message, args: &str) -> HandlerResult {
             msg.chat.id,
             format!(
                 "Invalid format. Use /singbox <version> <URI>\nSupported versions: {}",
-                utils::SUPPORTED_VERSIONS.join(", ")
+                utils::supported_versions_text()
             ),
         )
         .await?;
         return Ok(());
     };
 
-    if !utils::SUPPORTED_VERSIONS.contains(&version) {
+    let Some(version) = utils::normalize_version(version) else {
         bot.send_message(
             msg.chat.id,
             format!(
                 "Unsupported version. Currently supported: {}",
-                utils::SUPPORTED_VERSIONS.join(", ")
+                utils::supported_versions_text()
             ),
         )
         .await?;
         return Ok(());
-    }
+    };
 
-    match config::generate(version, uri) {
+    match config::generate(&version, uri) {
         Ok(json) => {
             let filename = format!(
                 "singbox_{}_{}.json",

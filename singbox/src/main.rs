@@ -16,7 +16,7 @@ fn main() -> ExitCode {
         [version, uri, output] => (version, uri, Some(output)),
         _ => {
             eprintln!("Usage: singbox <version> <URI> [output.json]");
-            eprintln!("Example: singbox 1.12.0 'vless://uuid@host:443?security=tls&type=ws'");
+            eprintln!("Example: singbox 1.14.4 'vless://uuid@host:443?security=tls&type=ws'");
             return ExitCode::from(2);
         }
     };
