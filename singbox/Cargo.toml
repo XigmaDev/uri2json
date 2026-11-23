@@ -5,13 +5,8 @@ edition = "2021"
 
 
 [dependencies]
-serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
 url = "2.4"
 base64 = "0.22.1"
-tokio = { version = "1.0", features = ["full"] }
-log = "0.4"
-pretty_env_logger = "0.5"
-chrono = "0.4"
 semver = "1.0"
 urlencoding = "2.1.3"

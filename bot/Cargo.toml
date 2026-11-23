@@ -5,10 +5,10 @@ edition = "2021"
 
 
 [dependencies]
-singbox ={ version = "1.0.0" ,path = "../singbox"}
-tokio = { version = "1.0", features = ["full"] }
+singbox = { version = "1.0.0", path = "../singbox" }
+tokio = { version = "1.0", features = ["rt-multi-thread", "macros"] }
 log = "0.4"
 pretty_env_logger = "0.5"
-dotenv = "0.15.0"
-teloxide = { version = "0.13.0", features = ["full"] }
+dotenvy = "0.15"
+teloxide = { version = "0.13.0", features = ["macros"] }
 chrono = "0.4"

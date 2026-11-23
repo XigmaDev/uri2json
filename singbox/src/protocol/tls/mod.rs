@@ -26,14 +26,20 @@ impl TlsConfig {
     pub fn to_config(&self) -> Value {
         let mut config = json!({
             "enabled": self.enabled,
-            "server_name": self.sni,
-            "alpn": self.alpn,
-            "insecure": false,
+            "insecure": self.insecure,
         });
+
+        if let Some(sni) = &self.sni {
+            config["server_name"] = json!(sni);
+        }
+
+        if !self.alpn.is_empty() {
+            config["alpn"] = json!(self.alpn);
+        }
 
         if let Some(utls) = &self.utls {
             config["utls"] = json!({
-                "enabled": true,
+                "enabled": utls.enabled,
                 "fingerprint": utls.fingerprint,
             });
         }
