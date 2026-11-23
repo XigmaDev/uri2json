@@ -60,3 +60,5 @@ impl fmt::Display for ConversionError {
         }
     }
 }
+
+impl std::error::Error for ConversionError {}

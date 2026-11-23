@@ -1,11 +1,7 @@
-use crate::error::ConversionError;
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::str::FromStr;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
+#[derive(Debug, Clone)]
 pub enum TransportConfig {
     Tcp,
     Http {
@@ -24,13 +20,9 @@ pub enum TransportConfig {
     },
     Quic,
     Grpc {
-        #[serde(rename = "service_name")]
         service_name: String,
-        #[serde(rename = "idle_timeout")]
         idle_timeout: String,
-        #[serde(rename = "ping_timeout")]
         ping_timeout: String,
-        #[serde(rename = "permit_without_stream")]
         permit_without_stream: bool,
     },
     Httpupgrade {
@@ -40,46 +32,12 @@ pub enum TransportConfig {
     },
 }
 
-impl FromStr for TransportConfig {
-    type Err = ConversionError;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "Tcp" | "" => Ok(TransportConfig::Tcp),
-            "http" | "h2" => Ok(TransportConfig::Http {
-                host: Vec::new(),
-                path: String::new(),
-                method: String::new(),
-                headers: HashMap::new(),
-                idle_timeout: "15s".to_string(),
-                ping_timeout: "15s".to_string(),
-            }),
-            "ws" | "websocket" => Ok(TransportConfig::Websocket {
-                path: String::new(),
-                headers: HashMap::new(),
-                max_early_data: 0,
-                early_data_header_name: String::new(),
-            }),
-            "quic" => Ok(TransportConfig::Quic),
-            "grpc" => Ok(TransportConfig::Grpc {
-                service_name: String::new(),
-                idle_timeout: "15s".to_string(),
-                ping_timeout: "15s".to_string(),
-                permit_without_stream: false,
-            }),
-            "httpupgrade" => Ok(TransportConfig::Httpupgrade {
-                host: String::new(),
-                path: String::new(),
-                headers: HashMap::new(),
-            }),
-            _ => Err(ConversionError::InvalidTransportType(s.to_string())),
-        }
-    }
-}
-
 impl TransportConfig {
-    pub fn to_config(&self) -> Value {
-        match self {
-            TransportConfig::Tcp => json!({}),
+    /// Returns the sing-box `transport` object, or `None` for plain TCP
+    /// (sing-box rejects a transport object without a type).
+    pub fn to_config(&self) -> Option<Value> {
+        let config = match self {
+            TransportConfig::Tcp => return None,
             TransportConfig::Http {
                 host,
                 path,
@@ -102,13 +60,18 @@ impl TransportConfig {
                 headers,
                 max_early_data,
                 early_data_header_name,
-            } => json!({
-                "type": "ws",
-                "path": path,
-                "headers": headers,
-                "max_early_data": max_early_data,
-                "early_data_header_name": early_data_header_name
-            }),
+            } => {
+                let mut config = json!({
+                    "type": "ws",
+                    "path": path,
+                    "headers": headers,
+                });
+                if *max_early_data > 0 {
+                    config["max_early_data"] = json!(max_early_data);
+                    config["early_data_header_name"] = json!(early_data_header_name);
+                }
+                config
+            }
 
             TransportConfig::Quic => json!({ "type": "quic" }),
 
@@ -135,6 +98,7 @@ impl TransportConfig {
                 "path": path,
                 "headers": headers
             }),
-        }
+        };
+        Some(config)
     }
 }
