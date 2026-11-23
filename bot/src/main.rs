@@ -1,21 +1,33 @@
 mod utils;
 
 use chrono::Local;
+use commands::Command;
 use singbox::config;
 use teloxide::{prelude::*, types::InputFile, utils::command::BotCommands};
 
-#[derive(BotCommands, Clone)]
-#[command(rename_rule = "lowercase")]
-#[command(description = "Commands:")]
-enum Command {
-    #[command(description = "Start")]
-    Start,
-    #[command(description = "Help")]
-    Help,
-    #[command(description = "Process singbox URI - /singbox <version> <URI>")]
-    Singbox(String),
-    #[command(description = "Xray Coming Soon")]
-    Xray,
+mod commands {
+    // teloxide-macros 0.8 parses `String` arguments with
+    // `from_str(s).map_err(|e| e.into())`. `String`'s parse error is
+    // `Infallible`, which newer rustc reports as an unreachable call in the
+    // generated code. The allow is scoped to this module so it only covers
+    // the derive output.
+    #![allow(unreachable_code)]
+
+    use teloxide::utils::command::BotCommands;
+
+    #[derive(BotCommands, Clone)]
+    #[command(rename_rule = "lowercase")]
+    #[command(description = "Commands:")]
+    pub enum Command {
+        #[command(description = "Start")]
+        Start,
+        #[command(description = "Help")]
+        Help,
+        #[command(description = "Process singbox URI - /singbox <version> <URI>")]
+        Singbox(String),
+        #[command(description = "Xray Coming Soon")]
+        Xray,
+    }
 }
 
 type HandlerResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
