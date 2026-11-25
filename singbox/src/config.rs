@@ -136,10 +136,13 @@ impl SingBoxConfig {
                     // remote queries through the proxy to avoid DNS leaks.
                     "detour": "proxy"
                 }),
+                // System resolver: only used for the proxy server's hostname
+                // and directly routed domains. Encrypted DNS to public
+                // resolvers (e.g. DoT to 1.1.1.1:853) is often blocked on
+                // filtered networks, which made startup fail.
                 json!({
                     "tag": "local",
-                    "type": "tls",
-                    "server": "1.1.1.1"
+                    "type": "local"
                 }),
             ]
         } else {
@@ -152,7 +155,7 @@ impl SingBoxConfig {
                 }),
                 json!({
                     "tag": "dns-local",
-                    "address": "tls://1.1.1.1",
+                    "address": "local",
                     "detour": "direct"
                 }),
                 json!({
@@ -331,9 +334,11 @@ impl SingBoxConfig {
         ]);
 
         if http_client {
-            // No detour: an HTTP client without dial fields connects directly.
-            self.http_clients = vec![json!({ "tag": DIRECT_HTTP_CLIENT })];
-            route["default_http_client"] = json!(DIRECT_HTTP_CLIENT);
+            self.http_clients = vec![json!({
+                "tag": RULE_SET_HTTP_CLIENT,
+                "detour": RULE_SET_DETOUR
+            })];
+            route["default_http_client"] = json!(RULE_SET_HTTP_CLIENT);
         }
 
         if self.is_1_12_or_newer() {
@@ -394,7 +399,12 @@ impl SingBoxConfig {
     }
 }
 
-const DIRECT_HTTP_CLIENT: &str = "direct-http";
+const RULE_SET_HTTP_CLIENT: &str = "rule-set-http";
+
+/// Rule-sets are fetched from raw.githubusercontent.com, which is often
+/// unreachable directly on filtered networks, so download them through the
+/// proxy. A failed initial download stops sing-box from starting.
+const RULE_SET_DETOUR: &str = "proxy";
 
 fn remote_rule_set(tag: &str, repo: &str, update_interval: &str, http_client: bool) -> Value {
     let mut rule_set = json!({
@@ -405,7 +415,7 @@ fn remote_rule_set(tag: &str, repo: &str, update_interval: &str, http_client: bo
         "update_interval": update_interval
     });
     if !http_client {
-        rule_set["download_detour"] = json!("direct");
+        rule_set["download_detour"] = json!(RULE_SET_DETOUR);
     }
     rule_set
 }
@@ -499,11 +509,12 @@ mod tests {
         let old = build("1.13.0", "trojan://pw@example.com:443");
         assert!(old.get("http_clients").is_none());
         assert!(old["route"].get("default_http_client").is_none());
-        assert_eq!(old["route"]["rule_set"][0]["download_detour"], "direct");
+        assert_eq!(old["route"]["rule_set"][0]["download_detour"], "proxy");
 
         let new = build("1.14.4", "trojan://pw@example.com:443");
-        assert_eq!(tags(&new["http_clients"]), vec!["direct-http"]);
-        assert_eq!(new["route"]["default_http_client"], "direct-http");
+        assert_eq!(tags(&new["http_clients"]), vec!["rule-set-http"]);
+        assert_eq!(new["http_clients"][0]["detour"], "proxy");
+        assert_eq!(new["route"]["default_http_client"], "rule-set-http");
         for rule_set in new["route"]["rule_set"].as_array().unwrap() {
             assert!(rule_set.get("download_detour").is_none());
             let tag = rule_set["tag"].as_str().unwrap();
@@ -545,6 +556,33 @@ mod tests {
             for rule in cfg["dns"]["rules"].as_array().unwrap() {
                 assert!(rule.get("outbound").is_none(), "{version}");
             }
+        }
+    }
+
+    #[test]
+    fn local_dns_uses_system_resolver() {
+        let old = build("1.11.0", "trojan://pw@example.com:443");
+        let local = old["dns"]["servers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["tag"] == "dns-local")
+            .unwrap();
+        assert_eq!(local["address"], "local");
+
+        for version in ["1.12.0", "1.13.0", "1.14.4"] {
+            let cfg = build(version, "trojan://pw@example.com:443");
+            let local = cfg["dns"]["servers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|s| s["tag"] == "local")
+                .unwrap();
+            assert_eq!(
+                local,
+                &json!({ "tag": "local", "type": "local" }),
+                "{version}"
+            );
         }
     }
 
